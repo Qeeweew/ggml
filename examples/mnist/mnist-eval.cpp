@@ -40,6 +40,25 @@ int main(int argc, char ** argv) {
 
     mnist_eval_result result_eval;
 
+    if (backend == "CPU") {
+        const int ncores_logical = std::thread::hardware_concurrency();
+        result_eval = mnist_graph_eval(
+            argv[1], ggml_get_data_f32(dataset.data), ggml_get_data_f32(dataset.labels), MNIST_NTEST, std::min(ncores_logical, (ncores_logical + 4)/2));
+        if (result_eval.success) {
+            fprintf(stdout, "%s: predicted digit is %d\n", __func__, result_eval.pred[iex]);
+
+            std::pair<double, double> result_loss = mnist_loss(result_eval);
+            fprintf(stdout, "%s: test_loss=%.6lf+-%.6lf\n", __func__, result_loss.first, result_loss.second);
+
+            std::pair<double, double> result_acc = mnist_accuracy(result_eval);
+            fprintf(stdout, "%s: test_acc=%.2lf+-%.2lf%%\n", __func__, 100.0*result_acc.first, 100.0*result_acc.second);
+
+            return 0;
+        }
+    } else {
+        fprintf(stdout, "%s: not trying to load a GGML graph from %s because this is only supported for the CPU backend\n", __func__, argv[1]);
+    }
+
     const int64_t t_start_us = ggml_time_us();
 
     mnist_model model = mnist_model_init_from_file(argv[1], backend);

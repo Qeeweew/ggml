@@ -131,9 +131,8 @@ struct mnist_model {
 
         backend = ggml_backend_dev_init(dev, NULL);
         if (ggml_backend_is_cpu(backend)) {
-            // const int ncores_logical = std::thread::hardware_concurrency();
-            ggml_backend_cpu_set_n_threads(backend, 1);
-            // std::min(ncores_logical, (ncores_logical + 4)/2));
+            const int ncores_logical = std::thread::hardware_concurrency();
+            ggml_backend_cpu_set_n_threads(backend, std::min(ncores_logical, (ncores_logical + 4)/2));
         }
 
         {

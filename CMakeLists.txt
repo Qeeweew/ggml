@@ -55,7 +55,6 @@ if (CMAKE_CROSSCOMPILING)
 else()
     set(GGML_NATIVE_DEFAULT ON)
 endif()
-set(GGML_NATIVE_DEFAULT OFF)
 
 # defaults
 if (NOT GGML_LLAMAFILE_DEFAULT)
@@ -91,7 +90,6 @@ if (GGML_NATIVE OR NOT GGML_NATIVE_DEFAULT)
 else()
     set(INS_ENB ON)
 endif()
-set(INS_ENB OFF)
 
 option(GGML_CPU_HBM     "ggml: use memkind for CPU HBM" OFF)
 
@@ -166,7 +164,7 @@ set   (GGML_SYCL_TARGET "INTEL" CACHE STRING
                                             "ggml: sycl target device")
 
 # extra artifacts
-option(GGML_BUILD_TESTS    "ggml: build tests"    OFF)
+option(GGML_BUILD_TESTS    "ggml: build tests"    ${GGML_STANDALONE})
 option(GGML_BUILD_EXAMPLES "ggml: build examples" ${GGML_STANDALONE})
 
 #
