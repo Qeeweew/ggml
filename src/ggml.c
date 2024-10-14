@@ -2877,7 +2877,7 @@ static ggml_float ggml_vec_soft_max_f32(const int n, float * y, const float * x,
     }
 #endif
     for (; i < n; ++i) {
-        float val = expf(x[i] - max);
+        float val = x[i] - max < -20 ? 0.0f : expf(x[i] - max);
         sum += (ggml_float)val;
         y[i] = val;
     }
@@ -3797,13 +3797,16 @@ struct ggml_context * ggml_init(struct ggml_init_params params) {
             const uint64_t t_start = ggml_time_us(); UNUSED(t_start);
 
             for (int i = 0; i < (1 << 16); ++i) {
+                if ((i & 0x7C00) == 0x7C00) continue;
                 union {
                     uint16_t u16;
                     ggml_fp16_t fp16;
                 } u = {i};
                 float f = ggml_table_f32_f16[i] = GGML_COMPUTE_FP16_TO_FP32(u.fp16);
-                ggml_table_gelu_f16[i] = GGML_FP32_TO_FP16(ggml_gelu_f32(f));
-                ggml_table_gelu_quick_f16[i] = GGML_FP32_TO_FP16(ggml_gelu_quick_f32(f));
+                if (f > -10 && f < 10) {
+                    ggml_table_gelu_f16[i] = GGML_FP32_TO_FP16(ggml_gelu_f32(f));
+                    ggml_table_gelu_quick_f16[i] = GGML_FP32_TO_FP16(ggml_gelu_quick_f32(f));
+                }
             }
 
             const uint64_t t_end = ggml_time_us(); UNUSED(t_end);
@@ -17220,6 +17223,8 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
     if (tensor->op == GGML_OP_NONE || ggml_is_empty(tensor)) {
         return;
     }
+    //fprintf(stdout, "op = %d\n", tensor->op);
+    //fflush(stdout);
 
     switch (tensor->op) {
         case GGML_OP_DUP:
@@ -19679,7 +19684,7 @@ struct ggml_cplan ggml_graph_plan(
             struct ggml_threadpool * threadpool) {
 
     if (threadpool == NULL) {
-        GGML_PRINT_DEBUG("Threadpool is not specified. Will create a disposable threadpool : n_threads %d\n", n_threads);
+        GGML_PRINT_DEBUG("%s: Threadpool is not specified. Will create a disposable threadpool : n_threads %d\n", __func__, n_threads);
     }
     if (n_threads <= 0) {
         n_threads = threadpool ? threadpool->n_threads_max : GGML_DEFAULT_N_THREADS;
@@ -20139,7 +20144,7 @@ enum ggml_status ggml_graph_compute(struct ggml_cgraph * cgraph, struct ggml_cpl
     bool disposable_threadpool = false;
 
     if (threadpool == NULL) {
-        GGML_PRINT_DEBUG("Threadpool is not specified. Will create a disposable threadpool : n_threads %d\n", n_threads);
+        GGML_PRINT_DEBUG("%s: Threadpool is not specified. Will create a disposable threadpool : n_threads %d\n", __func__, n_threads);
         disposable_threadpool = true;
 
         struct ggml_threadpool_params ttp = ggml_threadpool_params_default(n_threads);
