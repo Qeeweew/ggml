@@ -921,6 +921,12 @@ if (GGML_CANN)
     endif()
 endif()
 
+if (GGML_MM)
+    list(APPEND GGML_CDEF_PUBLIC GGML_USE_MM)
+    set(GGML_HEADERS_BLAS ../include/ggml-mm.h)
+    set(GGML_SOURCES_BLAS ggml-mm.cpp)
+endif()
+
 function(get_flags CCID CCVER)
     set(C_FLAGS "")
     set(CXX_FLAGS "")

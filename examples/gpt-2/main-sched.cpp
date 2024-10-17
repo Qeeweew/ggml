@@ -14,6 +14,10 @@
 #include "ggml-blas.h"
 #endif
 
+#ifdef GGML_USE_MM
+#include "ggml-mm.h"
+#endif
+
 #include "common.h"
 #include "common-ggml.h"
 
@@ -142,6 +146,11 @@ void init_backends(gpt2_model & model, const gpt_params & params) {
         ggml_backend_blas_set_n_threads(blas_backend, params.n_threads);
         model.backends.push_back(blas_backend);
     }
+#endif
+
+#ifdef GGML_USE_MM
+    ggml_backend_t mm_backend = ggml_backend_mm_init();
+    model.backends.push_back(mm_backend);
 #endif
 
     // always add the CPU backend as a fallback
