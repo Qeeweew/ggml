@@ -2,8 +2,27 @@
 #include "ggml-impl.h"
 #include "ggml-backend-impl.h"
 #include "ggml.h"
+#include "ggml-athread/tensors.h"
+#include <athread.h>
+#include <cstdio>
+
+static inline void to_athread_tensor(struct athread_tensor* dst, const struct ggml_tensor * src) {
+    dst->data = src->data;
+    for (int i = 0;i < GGML_MAX_DIMS;i++) {
+        dst->nb[i] = src->nb[i];
+        dst->ne[i] = src->ne[i];
+    } 
+}
+
+static void ggml_set_op_params(struct ggml_tensor * tensor, const void * params, size_t params_size) {
+    GGML_ASSERT(tensor != NULL); // silence -Warray-bounds warnings
+    assert(params_size <= GGML_MAX_OP_PARAMS);
+    memcpy(tensor->op_params, params, params_size);
+}
+
 
 struct ggml_backend_mm_context {
+    float* work_data;
 };
 
 // helper function to determine if it is better to use BLAS or not
@@ -21,7 +40,7 @@ static bool ggml_backend_mm_use_mm(const struct ggml_tensor * dst) {
     if (!ggml_is_permuted(src0) &&
         !ggml_is_permuted(src1) &&
         !ggml_is_permuted(dst) &&
-        src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_F32 && ne0 >= 32) {
+        (src0->type == GGML_TYPE_F32 || src0->type == GGML_TYPE_F16)  && src1->type == GGML_TYPE_F32 && ne10 % 32 == 0) {
         /*printf("BLAS: %d %d %d %d %d\n", ne0, ne1, ne10, ne00, ne01);*/
         return true;
     }
@@ -29,57 +48,32 @@ static bool ggml_backend_mm_use_mm(const struct ggml_tensor * dst) {
     return false;
 }
 
+extern "C" {
+    void slave_mul_mat_fp32(void *);
+    void slave_mul_mat_fp16(void *);
+}
+
+
+static inline void run_athread_func(void (*func)(void *), void * args) {
+    athread_spawn64_arg((void *) func, args);
+    athread_join64_arg();
+}
+
 static void ggml_backend_mm_mul_mat(ggml_backend_mm_context * ctx, struct ggml_tensor * dst) {
     const struct ggml_tensor * src0 = dst->src[0];
     const struct ggml_tensor * src1 = dst->src[1];
 
-    GGML_TENSOR_BINARY_OP_LOCALS
+    mul_mat_args args;
+    to_athread_tensor(&args.src0, src0);
+    to_athread_tensor(&args.src1, src1);
+    to_athread_tensor(&args.dst, dst);
 
-    const enum ggml_type type = src0->type;
-
-    GGML_ASSERT(ne0 == ne01);
-    GGML_ASSERT(ne1 == ne11);
-    GGML_ASSERT(ne2 == ne12);
-    GGML_ASSERT(ne3 == ne13);
-
-    // we don't support permuted src0 or src1
-    GGML_ASSERT(nb00 == ggml_type_size(type));
-    GGML_ASSERT(nb10 == ggml_type_size(src1->type));
-
-    // dst cannot be transposed or permuted
-    GGML_ASSERT(nb0 == sizeof(float));
-    GGML_ASSERT(nb0 <= nb1);
-    GGML_ASSERT(nb1 <= nb2);
-    GGML_ASSERT(nb2 <= nb3);
-
-    // broadcast factors
-    const int64_t r2 = ne12/ne02;
-    const int64_t r3 = ne13/ne03;
-
-    for (int64_t i13 = 0; i13 < ne13; i13++) {
-        for (int64_t i12 = 0; i12 < ne12; i12++) {
-            const int64_t i03 = i13 / r3;
-            const int64_t i02 = i12 / r2;
-
-            const char *x = ((char *) src0->data + i02 * nb02 + i03 * nb03);
-            const char *y = ((char *) src1->data + i12 * nb12 + i13 * nb13);
-            char *d = ((char *) dst->data + i12 * nb2 + i13 * nb3);
-
-            // Perform the matrix multiplication with initialization
-            for (int64_t i = 0; i < ne1; i++) {
-                const float *y_row = (const float *) (y + nb11 * i);
-                for (int64_t j = 0; j < ne01; j++) {
-                    const float *x_row = (const float *) (x + nb01 * j);
-                    float sum = 0.0f;
-                    for (int64_t k = 0; k < ne10; k++) {
-                        sum += y_row[k] * x_row[k];
-                    }
-                    *((float *) (d + i * nb1 + j * nb0)) = sum;
-                }
-            }
-        }
+    if (src0->type == GGML_TYPE_F32) {
+        run_athread_func(slave_mul_mat_fp32, &args);
+        return;
+    } else {
+        run_athread_func(slave_mul_mat_fp16, &args);
     }
-
 }
 
 // backend interface
@@ -91,6 +85,7 @@ static const char * ggml_backend_mm_name(ggml_backend_t backend) {
 }
 
 static void ggml_backend_mm_free(ggml_backend_t backend) {
+    athread_leave64_arg();
     ggml_backend_mm_context * ctx = (ggml_backend_mm_context *)backend->context;
     delete ctx;
     delete backend;
@@ -172,6 +167,7 @@ static ggml_guid_t ggml_backend_mm_guid(void) {
 
 ggml_backend_t ggml_backend_mm_init(void) {
     ggml_backend_mm_context * ctx = new ggml_backend_mm_context;
+    athread_enter64_arg();
 
     ggml_backend_t backend = new ggml_backend {
         /* .guid      = */ ggml_backend_mm_guid(),

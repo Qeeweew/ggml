@@ -34,6 +34,10 @@ endif()
 
 option(BUILD_SHARED_LIBS "ggml: build shared libraries" ${BUILD_SHARED_LIBS_DEFAULT})
 
+if (BUILD_SHARED_LIBS)
+    add_link_options(-mdynamic)
+endif()
+
 #
 # option list
 #

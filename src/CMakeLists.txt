@@ -923,8 +923,18 @@ endif()
 
 if (GGML_MM)
     list(APPEND GGML_CDEF_PUBLIC GGML_USE_MM)
-    set(GGML_HEADERS_BLAS ../include/ggml-mm.h)
-    set(GGML_SOURCES_BLAS ggml-mm.cpp)
+
+    set(GGML_SOURCES_MM_KERNELS ggml-athread/slave-kernels.c)
+
+    set(GGML_HEADERS_MM_HOST ../include/ggml-mm.h)
+    set(GGML_SOURCES_MM_HOST ggml-mm.cpp)
+    # 为特定源文件设置编译选项和语言
+    foreach(source_file IN LISTS GGML_SOURCES_MM_KERNELS)
+        set_source_files_properties(${source_file} PROPERTIES
+            COMPILE_FLAGS "-mslave -msimd -O3 -fPIC -I ./ggml-athread"
+            LANGUAGE C
+        )
+    endforeach()
 endif()
 
 function(get_flags CCID CCVER)
@@ -1345,6 +1355,8 @@ add_library(ggml
             ${GGML_SOURCES_BLAS}      ${GGML_HEADERS_BLAS}
             ${GGML_SOURCES_LLAMAFILE} ${GGML_HEADERS_LLAMAFILE}
             ${GGML_SOURCES_CANN}      ${GGML_HEADERS_CANN}
+            ${GGML_SOURCES_MM_HOST}   ${GGML_HEADERS_MM_HOST}
+            ${GGML_SOURCES_MM_KERNELS}
             ggml-aarch64.c            ggml-aarch64.h
             )
 
