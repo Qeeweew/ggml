@@ -4,7 +4,10 @@
 #include "ggml.h"
 #include "ggml-athread/tensors.h"
 #include <athread.h>
+#include <cmath>
+#include <cstddef>
 #include <cstdio>
+#include <cstring>
 
 static inline void to_athread_tensor(struct athread_tensor* dst, const struct ggml_tensor * src) {
     dst->data = src->data;
@@ -48,6 +51,21 @@ static bool ggml_backend_mm_use_mm(const struct ggml_tensor * dst) {
     return false;
 }
 
+static bool ggml_backend_mm_use_softmax(const struct ggml_tensor * dst) {
+    const struct ggml_tensor * src0 = dst->src[0];
+    const struct ggml_tensor * src1 = dst->src[1];
+    float scale    = 1.0f;
+    float max_bias = 0.0f;
+
+    memcpy(&scale,    (float *) dst->op_params + 0, sizeof(float));
+    memcpy(&max_bias, (float *) dst->op_params + 1, sizeof(float));
+    if (scale == 1.0f && max_bias == 0.0f && src1 == nullptr) {
+        return true;
+    }
+    return false;
+}
+
+
 extern "C" {
     void slave_mul_mat_fp32(void *);
     void slave_mul_mat_fp16(void *);
@@ -73,6 +91,68 @@ static void ggml_backend_mm_mul_mat(ggml_backend_mm_context * ctx, struct ggml_t
         return;
     } else {
         run_athread_func(slave_mul_mat_fp16, &args);
+    }
+}
+
+// ggml_compute_forward_soft_max
+
+static void ggml_backend_mm_soft_max(ggml_backend_mm_context * ctx, struct ggml_tensor * dst) {
+
+    const struct ggml_tensor * src0 = dst->src[0];
+    const struct ggml_tensor * src1 = dst->src[1];
+
+    assert(ggml_is_contiguous(dst));
+    assert(ggml_are_same_shape(src0, dst));
+
+    float scale    = 1.0f;
+    float max_bias = 0.0f;
+
+    memcpy(&scale,    (float *) dst->op_params + 0, sizeof(float));
+    memcpy(&max_bias, (float *) dst->op_params + 1, sizeof(float));
+
+    // TODO: handle transposed/permuted matrices
+
+    GGML_TENSOR_UNARY_OP_LOCALS
+
+    const int nc = src0->ne[0];
+    const int nr = ggml_nrows(src0);
+
+
+    const bool use_f16 = (src1 && src1->type == GGML_TYPE_F16);
+
+    for (int i1 = 0; i1 < nr; i1++) {
+        const float slope = 1.0;
+
+        float * sp = (float *)((char *) src0->data + i1*src0->nb[1]);
+        float * dp = (float *)((char *)  dst->data +  i1*dst->nb[1]);
+
+        // broadcast the mask across rows
+        ggml_fp16_t * mp_f16 = src1 ? (ggml_fp16_t *)((char *) src1->data) + (i1%ne01)*ne00 : NULL;
+        float       * mp_f32 = src1 ? (float       *)((char *) src1->data) + (i1%ne01)*ne00 : NULL;
+
+        ggml_vec_cpy_f32  (nc, wp, sp);
+        ggml_vec_scale_f32(nc, wp, scale);
+        if (mp_f32) {
+            if (use_f16) {
+                for (int i = 0; i < nc; ++i) {
+                    wp[i] += slope*GGML_FP16_TO_FP32(mp_f16[i]);
+                }
+            } else {
+                for (int i = 0; i < nc; ++i) {
+                    wp[i] += slope*mp_f32[i];
+                }
+            }
+        }
+
+        float max = -INFINITY;
+        ggml_vec_max_f32(nc, &max, wp);
+
+        float sum = ggml_vec_soft_max_f32(nc, dp, wp, max);
+        assert(sum > 0.0);
+
+        sum = 1.0/sum;
+        ggml_vec_scale_f32(nc, dp, sum);
+
     }
 }
 
@@ -107,7 +187,9 @@ static enum ggml_status ggml_backend_mm_graph_compute(ggml_backend_t backend, st
             case GGML_OP_MUL_MAT:
                 ggml_backend_mm_mul_mat(ctx, node);
                 break;
-
+            case GGML_OP_SOFT_MAX:
+                ggml_backend_mm_soft_max(ctx, node);
+                break;
             case GGML_OP_NONE:
             case GGML_OP_RESHAPE:
             case GGML_OP_VIEW:
@@ -129,7 +211,8 @@ static bool ggml_backend_mm_supports_op(ggml_backend_t backend, const struct ggm
     const struct ggml_tensor * src0 = op->src[0];
     const struct ggml_tensor * src1 = op->src[1];
 
-    return op->op == GGML_OP_MUL_MAT  && ggml_backend_mm_use_mm(op);
+    return (op->op == GGML_OP_MUL_MAT  && ggml_backend_mm_use_mm(op)) ||
+           (op->op == GGML_OP_SOFT_MAX && ggml_backend_mm_use_softmax(op));
 
     GGML_UNUSED(backend);
 }
