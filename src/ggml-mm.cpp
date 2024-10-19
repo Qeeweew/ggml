@@ -2,8 +2,11 @@
 #include "ggml-impl.h"
 #include "ggml-backend-impl.h"
 #include "ggml.h"
+#include <cmath>
+#include <cstring>
 
 struct ggml_backend_mm_context {
+    float* work_data;
 };
 
 // helper function to determine if it is better to use BLAS or not
@@ -21,13 +24,29 @@ static bool ggml_backend_mm_use_mm(const struct ggml_tensor * dst) {
     if (!ggml_is_permuted(src0) &&
         !ggml_is_permuted(src1) &&
         !ggml_is_permuted(dst) &&
-        src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_F32 && ne0 >= 32) {
+        (src0->type == GGML_TYPE_F32)  && src1->type == GGML_TYPE_F32) {
         /*printf("BLAS: %d %d %d %d %d\n", ne0, ne1, ne10, ne00, ne01);*/
         return true;
     }
 
     return false;
 }
+
+static bool ggml_backend_mm_use_softmax(const struct ggml_tensor * dst) {
+    const struct ggml_tensor * src0 = dst->src[0];
+    const struct ggml_tensor * src1 = dst->src[1];
+    float scale    = 1.0f;
+    float max_bias = 0.0f;
+
+    memcpy(&scale,    (float *) dst->op_params + 0, sizeof(float));
+    memcpy(&max_bias, (float *) dst->op_params + 1, sizeof(float));
+    if (scale == 1.0f && max_bias == 0.0f && src1 == nullptr) {
+        return true;
+    }
+    return false;
+}
+
+
 
 static void ggml_backend_mm_mul_mat(ggml_backend_mm_context * ctx, struct ggml_tensor * dst) {
     const struct ggml_tensor * src0 = dst->src[0];
@@ -79,7 +98,36 @@ static void ggml_backend_mm_mul_mat(ggml_backend_mm_context * ctx, struct ggml_t
             }
         }
     }
+}
 
+static void ggml_backend_mm_soft_max(ggml_backend_mm_context * ctx, struct ggml_tensor * dst) {
+
+    const struct ggml_tensor * src0 = dst->src[0];
+
+    GGML_TENSOR_UNARY_OP_LOCALS
+
+    const int nc = src0->ne[0];
+    const int nr = ggml_nrows(src0);
+
+    for (int i1 = 0; i1 < nr; i1++) {
+        float * sp = (float *)((char *) src0->data + i1*src0->nb[1]);
+        float * dp = (float *)((char *)  dst->data +  i1*dst->nb[1]);
+
+        float max = -INFINITY;
+        for (int j = 0;j < nc;j++) {
+            max = fmax(max, sp[j]);
+        }
+        float sum = 0.0f;
+        for (int j = 0;j < nc;j++) {
+            dp[j] = expf(sp[j] - max);
+            sum += dp[j];
+        }
+        assert(sum > 0.0);
+        sum = 1.0/sum;
+        for (int j = 0;j < nc;j++) {
+            dp[j] = dp[j] * sum;
+        }
+    }
 }
 
 // backend interface
@@ -112,7 +160,9 @@ static enum ggml_status ggml_backend_mm_graph_compute(ggml_backend_t backend, st
             case GGML_OP_MUL_MAT:
                 ggml_backend_mm_mul_mat(ctx, node);
                 break;
-
+            case GGML_OP_SOFT_MAX:
+                ggml_backend_mm_soft_max(ctx, node);
+                break;
             case GGML_OP_NONE:
             case GGML_OP_RESHAPE:
             case GGML_OP_VIEW:
@@ -134,7 +184,8 @@ static bool ggml_backend_mm_supports_op(ggml_backend_t backend, const struct ggm
     const struct ggml_tensor * src0 = op->src[0];
     const struct ggml_tensor * src1 = op->src[1];
 
-    return op->op == GGML_OP_MUL_MAT  && ggml_backend_mm_use_mm(op);
+    return (op->op == GGML_OP_MUL_MAT  && ggml_backend_mm_use_mm(op)) ||
+           (op->op == GGML_OP_SOFT_MAX && ggml_backend_mm_use_softmax(op));
 
     GGML_UNUSED(backend);
 }
