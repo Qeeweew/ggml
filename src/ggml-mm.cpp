@@ -4,6 +4,7 @@
 #include "ggml.h"
 #include "ggml-athread/tensors.h"
 #include <athread.h>
+#include <cfloat>
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
@@ -99,60 +100,30 @@ static void ggml_backend_mm_mul_mat(ggml_backend_mm_context * ctx, struct ggml_t
 static void ggml_backend_mm_soft_max(ggml_backend_mm_context * ctx, struct ggml_tensor * dst) {
 
     const struct ggml_tensor * src0 = dst->src[0];
-    const struct ggml_tensor * src1 = dst->src[1];
-
-    assert(ggml_is_contiguous(dst));
-    assert(ggml_are_same_shape(src0, dst));
-
-    float scale    = 1.0f;
-    float max_bias = 0.0f;
-
-    memcpy(&scale,    (float *) dst->op_params + 0, sizeof(float));
-    memcpy(&max_bias, (float *) dst->op_params + 1, sizeof(float));
-
-    // TODO: handle transposed/permuted matrices
 
     GGML_TENSOR_UNARY_OP_LOCALS
 
     const int nc = src0->ne[0];
     const int nr = ggml_nrows(src0);
 
-
-    const bool use_f16 = (src1 && src1->type == GGML_TYPE_F16);
-
     for (int i1 = 0; i1 < nr; i1++) {
-        const float slope = 1.0;
-
         float * sp = (float *)((char *) src0->data + i1*src0->nb[1]);
         float * dp = (float *)((char *)  dst->data +  i1*dst->nb[1]);
 
-        // broadcast the mask across rows
-        ggml_fp16_t * mp_f16 = src1 ? (ggml_fp16_t *)((char *) src1->data) + (i1%ne01)*ne00 : NULL;
-        float       * mp_f32 = src1 ? (float       *)((char *) src1->data) + (i1%ne01)*ne00 : NULL;
-
-        ggml_vec_cpy_f32  (nc, wp, sp);
-        ggml_vec_scale_f32(nc, wp, scale);
-        if (mp_f32) {
-            if (use_f16) {
-                for (int i = 0; i < nc; ++i) {
-                    wp[i] += slope*GGML_FP16_TO_FP32(mp_f16[i]);
-                }
-            } else {
-                for (int i = 0; i < nc; ++i) {
-                    wp[i] += slope*mp_f32[i];
-                }
-            }
+        float max = -FLT_MAX / 2;
+        for (int j = 0;j < nc;j++) {
+            max = fmax(max, sp[j]);
         }
-
-        float max = -INFINITY;
-        ggml_vec_max_f32(nc, &max, wp);
-
-        float sum = ggml_vec_soft_max_f32(nc, dp, wp, max);
+        float sum = 0.0f;
+        for (int j = 0;j < nc;j++) {
+            dp[j] = sp[j] - max < -20.0f ? 0.0f : expf(sp[j] - max);
+            sum += dp[j];
+        }
         assert(sum > 0.0);
-
         sum = 1.0/sum;
-        ggml_vec_scale_f32(nc, dp, sum);
-
+        for (int j = 0;j < nc;j++) {
+            dp[j] = dp[j] * sum;
+        }
     }
 }
 

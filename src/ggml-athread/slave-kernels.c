@@ -3,6 +3,8 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "tensors.h"
+#define PT_MATH_RANGE_CHECKS
+#include "pt_math.h"
 
 #define remote_ldm_addr(coreid, ldm_var) (((unsigned long) &ldm_var | (unsigned long) (coreid) << 20) |(1ULL << 45))
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
@@ -184,3 +186,4 @@ void mul_mat_fp16(void* args) {
         }
     }
 }
+
