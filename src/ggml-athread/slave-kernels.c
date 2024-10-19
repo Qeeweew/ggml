@@ -27,7 +27,6 @@
 
 #define ALIGNMENT_LDM 64
 static __thread_local char __buffer[64 * 1024] __attribute__((aligned(ALIGNMENT_LDM)));
-static __thread_local_share char __buffer_share[4 * 64 * 1024];
 static int __buffer_i;
 
 static inline void init(void) {
@@ -59,11 +58,10 @@ void mul_mat_fp32(void* args) {
     GGML_TENSOR_LOCALS(size_t, nb, dst, nb)
 
     // broadcast factors
-    const int64_t r2 = ne12/ne02;
-    const int64_t r3 = ne13/ne03;
+    const int r2 = ne12/ne02;
+    const int r3 = ne13/ne03;
     float *y_row = (float *) ldm_malloc_fast(nb11);
     float *x_row = (float *) ldm_malloc_fast(nb01);
-    float *buffer = (float *) __buffer_share;
     floatv8 sum;
     float sum_value;
     athread_rply_t rply;
@@ -89,7 +87,7 @@ void mul_mat_fp32(void* args) {
                         simd_load(v_y, &y_row[k]);
                         sum += v_x * v_y;
                     }
-                    float sum_value = simd_reduc_pluss(sum);
+                    sum_value = simd_reduc_pluss(sum);
                     athread_dma_put((void *) (d + i * nb1 + j * nb0), (void*) &sum_value, sizeof(float));
                 }
                 athread_ssync_array();
@@ -120,14 +118,15 @@ void mul_mat_fp16(void* args) {
     GGML_TENSOR_LOCALS(size_t, nb, dst, nb)
 
 
+    const int STRIDE_NE01 = 16;
     // broadcast factors
-    const int64_t r2 = ne12/ne02;
-    const int64_t r3 = ne13/ne03;
+    const int r2 = ne12/ne02;
+    const int r3 = ne13/ne03;
     float *y_row = (float *) ldm_malloc_fast(nb11);
     float16 *x_row = (float16 *) ldm_malloc_fast(nb01);
-    float *buffer = (float *) ldm_malloc_fast(8 * sizeof(float));
     floatv8 sum;
-    float sum_value;
+    
+    float sum_value[STRIDE_NE01];
     athread_rply_t rply;
     intv16 vshfw_c0,vshfw_c1;
     simd_load(vshfw_c0, (int *) vshfw_c0_arr);
@@ -155,28 +154,30 @@ void mul_mat_fp16(void* args) {
                     simd_store(v2, (int *) &y_row[k +  0]);
                     simd_store(v3, (int *) &y_row[k + 16]);
                 }
-                for (int j = _PEN; j < ne01; j +=64) {
-                    sum = 0.0f;
-                    athread_dma_get((void *) x_row, (void *) (x + nb01 * j), nb01);
-                    for (int k = 0; k < ne10; k += 32) {
-                        float16v32 v_f16;
-                        floatv8 v_f32;
-                        simd_load(v_f16, &x_row[k]);
+                for (int j0 = _PEN * STRIDE_NE01; j0 < ne01; j0 += 64 * STRIDE_NE01) {
+                    for (int j = j0, idx = 0; j < ne01 && idx < STRIDE_NE01; j ++, idx++) {
+                        sum = 0.0f;
+                        athread_dma_get((void *) x_row, (void *) (x + nb01 * j), nb01);
+                        for (int k = 0; k < ne10; k += 32) {
+                            float16v32 v_f16;
+                            floatv8 v_f32;
+                            simd_load(v_f16, &x_row[k]);
 
-                        simd_load(v_f32, &y_row[k + 0]);
-                        sum += v_f32 * simd_vfcvths(v_f16, 0);
+                            simd_load(v_f32, &y_row[k + 0]);
+                            sum += v_f32 * simd_vfcvths(v_f16, 0);
 
-                        simd_load(v_f32, &y_row[k + 8]);
-                        sum += v_f32 * simd_vfcvths(v_f16, 1);
+                            simd_load(v_f32, &y_row[k + 8]);
+                            sum += v_f32 * simd_vfcvths(v_f16, 1);
 
-                        simd_load(v_f32, &y_row[k + 16]);
-                        sum += v_f32 * simd_vfcvths(v_f16, 2);
+                            simd_load(v_f32, &y_row[k + 16]);
+                            sum += v_f32 * simd_vfcvths(v_f16, 2);
 
-                        simd_load(v_f32, &y_row[k + 24]);
-                        sum += v_f32 * simd_vfcvths(v_f16, 3);
+                            simd_load(v_f32, &y_row[k + 24]);
+                            sum += v_f32 * simd_vfcvths(v_f16, 3);
+                        }
+                        sum_value[idx] = simd_reduc_pluss(sum);
                     }
-                    sum_value = simd_reduc_pluss(sum);
-                    athread_dma_put((void *) (d + i * nb1 + j * nb0), (void*) &sum_value, sizeof(float));
+                    athread_dma_put((void *) (d + i * nb1 + j0 * nb0), sum_value, sizeof(float) * MIN(STRIDE_NE01, ne01 - j0));
                 }
                 athread_ssync_array();
             }

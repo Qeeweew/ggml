@@ -55,8 +55,8 @@ extern "C" {
 
 
 static inline void run_athread_func(void (*func)(void *), void * args) {
-    athread_spawn64_arg((void *) func, args);
-    athread_join64_arg();
+    __real_athread_spawn64_cgmask(1<<0, (void *) func, args);
+    athread_join64_cgmask(1<<0);
 }
 
 static void ggml_backend_mm_mul_mat(ggml_backend_mm_context * ctx, struct ggml_tensor * dst) {
@@ -166,9 +166,10 @@ static ggml_guid_t ggml_backend_mm_guid(void) {
 }
 
 ggml_backend_t ggml_backend_mm_init(void) {
-    ggml_backend_mm_context * ctx = new ggml_backend_mm_context;
+    athread_res_show();
     athread_enter64_arg();
 
+    ggml_backend_mm_context * ctx = new ggml_backend_mm_context;
     ggml_backend_t backend = new ggml_backend {
         /* .guid      = */ ggml_backend_mm_guid(),
         /* .interface = */ mm_backend_i,
