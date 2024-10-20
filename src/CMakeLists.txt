@@ -935,6 +935,12 @@ if (GGML_MM)
             LANGUAGE C
         )
     endforeach()
+    foreach(source_file IN LISTS GGML_SOURCES_MM_HOST)
+        set_source_files_properties(${source_file} PROPERTIES
+            COMPILE_FLAGS "-mhost -msimd -O3 -fPIC"
+            LANGUAGE CXX
+        )
+    endforeach()
 endif()
 
 function(get_flags CCID CCVER)

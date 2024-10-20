@@ -1,12 +1,15 @@
 #include "ggml-mm.h"
+#include "ggml-athread/pt_math.h"
 #include "ggml-impl.h"
 #include "ggml-backend-impl.h"
 #include "ggml.h"
 #include "ggml-athread/tensors.h"
 #include <athread.h>
+#include <cassert>
 #include <cfloat>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 
@@ -64,6 +67,12 @@ static bool ggml_backend_mm_use_softmax(const struct ggml_tensor * dst) {
         return true;
     }
     return false;
+}
+
+static bool ggml_backend_mm_use_dup(const struct ggml_tensor * dst) {
+    if (!ggml_is_contiguous(dst)) return false;
+    if (dst->type != dst->src[0]->type) return false;
+    return true;
 }
 
 
@@ -127,6 +136,100 @@ static void ggml_backend_mm_soft_max(ggml_backend_mm_context * ctx, struct ggml_
     }
 }
 
+
+static void ggml_backend_mm_dup(ggml_backend_mm_context * ctx, struct ggml_tensor * dst) {
+
+    const struct ggml_tensor * src0 = dst->src[0];
+    GGML_TENSOR_UNARY_OP_LOCALS
+
+    const size_t type_size = ggml_type_size(src0->type);
+
+    int i0, i1, i2, i3;
+    char* dst_ptr = (char *) dst->data;
+    char* src_ptr = (char *) src0->data;
+
+    if (type_size == 2) {
+        for (i3 = 0; i3 < ne03; i3++) {
+            for (i2 = 0; i2 < ne02; i2++) {
+                for (i1 = 0; i1 < ne01; i1++) {
+                    for (i0 = 0; i0 < ne00; i0++) {
+                        *(uint16_t*) (dst_ptr + i0 * 2 + i1 * ne00 * 2 + i2 * ne00 * ne01 * 2 + i3 * ne00 * ne01 * ne02 * 2) = 
+                        *(uint16_t*) (src_ptr + i0 * nb00 + i1 * nb01 + i2 * nb02 + i3 * nb03);
+                    }
+                }
+            }
+        }
+    } else if (type_size == 4) {
+        if (nb00 == type_size) {
+            for (i3 = 0; i3 < ne03; i3++) {
+                for (i2 = 0; i2 < ne02; i2++) {
+                    for (i1 = 0; i1 < ne01; i1++) {
+#pragma GCC unroll 8
+                        for (i0 = 0; i0 < ne00; i0++) {
+                            *(uint32_t*) (dst_ptr + i0 * 4 + i1 * ne00 * 4 + i2 * ne00 * ne01 * 4 + i3 * ne00 * ne01 * ne02 * 4) = 
+                            *(uint32_t*) (src_ptr + i0 * nb00 + i1 * nb01 + i2 * nb02 + i3 * nb03);
+                        }
+                    }
+                }
+            }
+        } else if (nb01 == type_size) {
+            for (i3 = 0; i3 < ne03; i3++) {
+                for (i2 = 0; i2 < ne02; i2++) {
+                    for (i1 = 0; i1 + 8 <= ne01; i1+=8) {
+                        for (i0 = 0; i0 < ne00; i0++) {
+#pragma GCC unroll 8 
+                            for (int p = 0; p < 8;p++) {
+                                *(uint32_t*) (dst_ptr + i0 * 4 + (i1 + p) * ne00 * 4 + i2 * ne00 * ne01 * 4 + i3 * ne00 * ne01 * ne02 * 4) = 
+                                *(uint32_t*) (src_ptr + i0 * nb00 + (i1 + p) * nb01 + i2 * nb02 + i3 * nb03);
+                            }
+                        }
+                    }
+                    for (; i1 < ne01; i1++) {
+                        for (i0 = 0; i0 < ne00; i0++) {
+                            *(uint32_t*) (dst_ptr + i0 * 4 + i1 * ne00 * 4 + i2 * ne00 * ne01 * 4 + i3 * ne00 * ne01 * ne02 * 4) = 
+                            *(uint32_t*) (src_ptr + i0 * nb00 + i1 * nb01 + i2 * nb02 + i3 * nb03);
+                        }
+                    }
+                }
+            }
+        } else if (nb02 == type_size) {
+            for (i3 = 0; i3 < ne03; i3++) {
+                for (i1 = 0; i1 < ne01; i1++) {
+                    for (i2 = 0; i2 <= ne02; i2+=8) {
+                        for (i0 = 0; i0 < ne00; i0++) {
+#pragma GCC unroll 8 
+                            for (int p = 0; p < 8;p++) {
+                                *(uint32_t*) (dst_ptr + i0 * 4 + i1 * ne00 * 4 + (i2 + p) * ne00 * ne01 * 4 + i3 * ne00 * ne01 * ne02 * 4) = 
+                                *(uint32_t*) (src_ptr + i0 * nb00 + i1 * nb01 + (i2 + p) * nb02 + i3 * nb03);
+                            }
+                        }
+                    }
+                    for (; i2 < ne02; i2++) {
+                        for (i0 = 0; i0 < ne00; i0++) {
+                            *(uint32_t*) (dst_ptr + i0 * 4 + i1 * ne00 * 4 + i2 * ne00 * ne01 * 4 + i3 * ne00 * ne01 * ne02 * 4) = 
+                            *(uint32_t*) (src_ptr + i0 * nb00 + i1 * nb01 + i2 * nb02 + i3 * nb03);
+                        }
+                    }
+                }
+            }
+        } else {
+            for (i3 = 0; i3 < ne03; i3++) {
+                for (i2 = 0; i2 < ne02; i2++) {
+                    for (i1 = 0; i1 < ne01; i1++) {
+                        for (i0 = 0; i0 < ne00; i0++) {
+                            *(uint32_t*) (dst_ptr + i0 * 4 + i1 * ne00 * 4 + i2 * ne00 * ne01 * 4 + i3 * ne00 * ne01 * ne02 * 4) = 
+                            *(uint32_t*) (src_ptr + i0 * nb00 + i1 * nb01 + i2 * nb02 + i3 * nb03);
+                        }
+                    }
+                }
+            }
+        }
+
+    } else {
+        assert(false);
+    }
+}
+
 // backend interface
 
 static const char * ggml_backend_mm_name(ggml_backend_t backend) {
@@ -161,6 +264,12 @@ static enum ggml_status ggml_backend_mm_graph_compute(ggml_backend_t backend, st
             case GGML_OP_SOFT_MAX:
                 ggml_backend_mm_soft_max(ctx, node);
                 break;
+            case GGML_OP_DUP:
+                ggml_backend_mm_dup(ctx, node);
+                break;
+            case GGML_OP_CONT:
+                ggml_backend_mm_dup(ctx, node);
+                break;
             case GGML_OP_NONE:
             case GGML_OP_RESHAPE:
             case GGML_OP_VIEW:
@@ -183,7 +292,9 @@ static bool ggml_backend_mm_supports_op(ggml_backend_t backend, const struct ggm
     const struct ggml_tensor * src1 = op->src[1];
 
     return (op->op == GGML_OP_MUL_MAT  && ggml_backend_mm_use_mm(op)) ||
-           (op->op == GGML_OP_SOFT_MAX && ggml_backend_mm_use_softmax(op));
+           (op->op == GGML_OP_SOFT_MAX && ggml_backend_mm_use_softmax(op)) ||
+           (op->op == GGML_OP_DUP && ggml_backend_mm_use_dup(op)) ||
+           (op->op == GGML_OP_CONT && ggml_backend_mm_use_dup(op));
 
     GGML_UNUSED(backend);
 }

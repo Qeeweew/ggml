@@ -19856,18 +19856,18 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
         /*.threadpool=*/ tp,
     };
 
-    int64_t op_time[100];
-    memset(op_time, 0, sizeof(op_time));
+    // int64_t op_time[100];
+    // memset(op_time, 0, sizeof(op_time));
 
     for (int node_n = 0; node_n < cgraph->n_nodes && !tp->abort; node_n++) {
         struct ggml_tensor * node = cgraph->nodes[node_n];
 
-        int64_t start = ggml_time_us();
+        // int64_t start = ggml_time_us();
 
         ggml_compute_forward(&params, node);
 
-        int64_t end = ggml_time_us();
-        op_time[node->op] += end - start;
+        // int64_t end = ggml_time_us();
+        // op_time[node->op] += end - start;
 
         if (state->ith == 0 && cplan->abort_callback &&
                 cplan->abort_callback(cplan->abort_callback_data)) {
@@ -19878,13 +19878,13 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
         ggml_barrier(state->threadpool);
     }
 
-    printf("\nOP TIME USED:\n");
-    for (int i = 0;i < 100;i++) {
-        if (op_time[i] != 0) {
-            printf("%s : %ld\n", ggml_op_name(i), op_time[i]); 
-        }
-    }
-    printf("\n");
+    // printf("\nOP TIME USED:\n");
+    // for (int i = 0;i < 100;i++) {
+    //     if (op_time[i] != 0) {
+    //         printf("%s : %ld\n", ggml_op_name(i), op_time[i]); 
+    //     }
+    // }
+    // printf("\n");
 
 
     return 0;
