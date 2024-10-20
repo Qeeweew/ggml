@@ -8897,19 +8897,45 @@ static void ggml_compute_forward_dup_bytes(
             }
         } else {
             //printf("%s: this is not optimal - fix me\n", __func__);
-
-            for (int64_t i03 = 0; i03 < ne03; i03++) {
-                for (int64_t i02 = 0; i02 < ne02; i02++) {
-                    id += rs * ir0;
-                    for (int64_t i01 = ir0; i01 < ir1; i01++) {
-                        for (int64_t i00 = 0; i00 < ne00; i00++) {
-                            const char * src0_ptr = (char *) src0->data + i00*nb00 + i01*nb01 + i02*nb02 + i03*nb03;
-                            memcpy(dst_ptr + id, src0_ptr, type_size);
-
-                            id += type_size;
+            if (type_size == 4) {
+                for (int64_t i03 = 0; i03 < ne03; i03++) {
+                    for (int64_t i02 = 0; i02 < ne02; i02++) {
+                        id += rs * ir0;
+                        int64_t i01;
+                        for (i01 = ir0; i01 + 8 <= ir1; i01+=8) {
+                            for (int64_t i00 = 0; i00 < ne00; i00++) {
+                                const uint32_t * src0_ptr = (uint32_t *) src0->data + (i00*nb00 + i01*nb01 + i02*nb02 + i03*nb03) / 4;
+                                for (int p = 0;p < 8;p++) {
+                                    *((uint32_t *) (dst_ptr + id + p * ne00 * type_size)) = src0_ptr[p];
+                                }
+                                id += type_size;
+                            }
+                            id += 7 * ne00 * type_size;
                         }
+                        for (; i01 < ir1; i01++) {
+                            for (int64_t i00 = 0; i00 < ne00; i00++) {
+                                const uint32_t * src0_ptr = (uint32_t *) src0->data + (i00*nb00 + i01*nb01 + i02*nb02 + i03*nb03) / 4;
+                                *((uint32_t *) (dst_ptr + id)) = *src0_ptr;
+                                id += type_size;
+                            }
+                        }
+                        id += rs * (ne01 - ir1);
                     }
-                    id += rs * (ne01 - ir1);
+                }
+            } else {
+                for (int64_t i03 = 0; i03 < ne03; i03++) {
+                    for (int64_t i02 = 0; i02 < ne02; i02++) {
+                        id += rs * ir0;
+                        for (int64_t i01 = ir0; i01 < ir1; i01++) {
+                            for (int64_t i00 = 0; i00 < ne00; i00++) {
+                                const char * src0_ptr = (char *) src0->data + i00*nb00 + i01*nb01 + i02*nb02 + i03*nb03;
+                                memcpy(dst_ptr + id, src0_ptr, type_size);
+
+                                id += type_size;
+                            }
+                        }
+                        id += rs * (ne01 - ir1);
+                    }
                 }
             }
         }
@@ -19830,10 +19856,18 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
         /*.threadpool=*/ tp,
     };
 
+    int64_t op_time[100];
+    memset(op_time, 0, sizeof(op_time));
+
     for (int node_n = 0; node_n < cgraph->n_nodes && !tp->abort; node_n++) {
         struct ggml_tensor * node = cgraph->nodes[node_n];
 
+        int64_t start = ggml_time_us();
+
         ggml_compute_forward(&params, node);
+
+        int64_t end = ggml_time_us();
+        op_time[node->op] += end - start;
 
         if (state->ith == 0 && cplan->abort_callback &&
                 cplan->abort_callback(cplan->abort_callback_data)) {
@@ -19843,6 +19877,15 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
 
         ggml_barrier(state->threadpool);
     }
+
+    printf("\nOP TIME USED:\n");
+    for (int i = 0;i < 100;i++) {
+        if (op_time[i] != 0) {
+            printf("%s : %ld\n", ggml_op_name(i), op_time[i]); 
+        }
+    }
+    printf("\n");
+
 
     return 0;
 }
