@@ -8888,54 +8888,14 @@ static void ggml_compute_forward_dup_bytes(
                 for (int64_t i02 = 0; i02 < ne02; i02++) {
                     id += rs * ir0;
                     for (int64_t i01 = ir0; i01 < ir1; i01++) {
-                        const char * src0_ptr = (char *) src0->data + i01*nb01 + i02*nb02 + i03*nb03;
-                        memcpy(dst_ptr + id, src0_ptr, rs);
-                        id += rs;
+                        for (int64_t i00 = 0; i00 < ne00; i00++) {
+                            const char * src0_ptr = (char *) src0->data + i00*nb00 + i01*nb01 + i02*nb02 + i03*nb03;
+                            memcpy(dst_ptr + id, src0_ptr, type_size);
+
+                            id += type_size;
+                        }
                     }
                     id += rs * (ne01 - ir1);
-                }
-            }
-        } else {
-            //printf("%s: this is not optimal - fix me\n", __func__);
-            if (type_size == 4) {
-                for (int64_t i03 = 0; i03 < ne03; i03++) {
-                    for (int64_t i02 = 0; i02 < ne02; i02++) {
-                        id += rs * ir0;
-                        int64_t i01;
-                        for (i01 = ir0; i01 + 8 <= ir1; i01+=8) {
-                            for (int64_t i00 = 0; i00 < ne00; i00++) {
-                                const uint32_t * src0_ptr = (uint32_t *) src0->data + (i00*nb00 + i01*nb01 + i02*nb02 + i03*nb03) / 4;
-                                for (int p = 0;p < 8;p++) {
-                                    *((uint32_t *) (dst_ptr + id + p * ne00 * type_size)) = src0_ptr[p];
-                                }
-                                id += type_size;
-                            }
-                            id += 7 * ne00 * type_size;
-                        }
-                        for (; i01 < ir1; i01++) {
-                            for (int64_t i00 = 0; i00 < ne00; i00++) {
-                                const uint32_t * src0_ptr = (uint32_t *) src0->data + (i00*nb00 + i01*nb01 + i02*nb02 + i03*nb03) / 4;
-                                *((uint32_t *) (dst_ptr + id)) = *src0_ptr;
-                                id += type_size;
-                            }
-                        }
-                        id += rs * (ne01 - ir1);
-                    }
-                }
-            } else {
-                for (int64_t i03 = 0; i03 < ne03; i03++) {
-                    for (int64_t i02 = 0; i02 < ne02; i02++) {
-                        id += rs * ir0;
-                        for (int64_t i01 = ir0; i01 < ir1; i01++) {
-                            for (int64_t i00 = 0; i00 < ne00; i00++) {
-                                const char * src0_ptr = (char *) src0->data + i00*nb00 + i01*nb01 + i02*nb02 + i03*nb03;
-                                memcpy(dst_ptr + id, src0_ptr, type_size);
-
-                                id += type_size;
-                            }
-                        }
-                        id += rs * (ne01 - ir1);
-                    }
                 }
             }
         }
