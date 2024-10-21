@@ -83,13 +83,16 @@ void mul_mat_fp32(void* args) {
                 for (int j = _PEN; j < ne01; j +=64) {
                     sum = 0.0f;
                     athread_dma_get((void *) x_row, (void *) (x + nb01 * j), nb01);
-                    for (int k = 0; k < ne10;k+=8) {
+                    for (int k = 0; k + 8 <= ne10;k+=8) {
                         floatv8 v_x, v_y;
                         simd_load(v_x, &x_row[k]);
                         simd_load(v_y, &y_row[k]);
                         sum += v_x * v_y;
                     }
                     sum_value = simd_reduc_pluss(sum);
+                    for (int k = ne10 - ne10 % 8;k < ne10;k++) {
+                        sum_value += x_row[k] * y_row[k];
+                    }
                     athread_dma_put((void *) (d + i * nb1 + j * nb0), (void*) &sum_value, sizeof(float));
                 }
                 athread_ssync_array();
@@ -146,7 +149,7 @@ void mul_mat_fp16(void* args) {
             // Perform the matrix multiplication with initialization
             for (int i = 0; i < ne1; i++) {
                 athread_dma_bcast_coll((void *) y_row, (void *) (y + nb11 * i), nb11);
-                for (int k = 0; k < ne10;k += 32) {
+                for (int k = 0; k + 32 <= ne10;k += 32) {
                     intv16 v0, v1;
                     simd_load(v0, (int *) &y_row[k +  0]);
                     simd_load(v1, (int *) &y_row[k + 16]);
@@ -160,7 +163,7 @@ void mul_mat_fp16(void* args) {
                     for (int j = j0, idx = 0; j < ne01 && idx < STRIDE_NE01; j ++, idx++) {
                         sum = 0.0f;
                         athread_dma_get((void *) x_row, (void *) (x + nb01 * j), nb01);
-                        for (int k = 0; k < ne10; k += 32) {
+                        for (int k = 0; k + 32 <= ne10; k += 32) {
                             float16v32 v_f16;
                             floatv8 v_f32;
                             simd_load(v_f16, &x_row[k]);
@@ -178,6 +181,9 @@ void mul_mat_fp16(void* args) {
                             sum += v_f32 * simd_vfcvths(v_f16, 3);
                         }
                         sum_value[idx] = simd_reduc_pluss(sum);
+                        for (int k = ne10 - ne10 % 32; k < ne10; k++) {
+                            sum_value[idx] += (float) x_row[k] * y_row[k];
+                        }
                     }
                     athread_dma_put((void *) (d + i * nb1 + j0 * nb0), sum_value, sizeof(float) * MIN(STRIDE_NE01, ne01 - j0));
                 }

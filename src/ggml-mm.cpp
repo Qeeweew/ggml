@@ -39,20 +39,15 @@ static bool ggml_backend_mm_use_mm(const struct ggml_tensor * dst) {
     const struct ggml_tensor * src0 = dst->src[0];
     const struct ggml_tensor * src1 = dst->src[1];
 
-    const int64_t ne10 = src1->ne[0];
-
-    const int64_t ne0 = dst->ne[0];
-    const int64_t ne1 = dst->ne[1];
+    GGML_TENSOR_BINARY_OP_LOCALS
 
     // TODO: find the optimal values for these
-    if (!ggml_is_permuted(src0) &&
-        !ggml_is_permuted(src1) &&
-        !ggml_is_permuted(dst) &&
-        (src0->type == GGML_TYPE_F32 || src0->type == GGML_TYPE_F16)  && src1->type == GGML_TYPE_F32 && ne10 % 32 == 0) {
-        /*printf("BLAS: %d %d %d %d %d\n", ne0, ne1, ne10, ne00, ne01);*/
+    if (nb0 == ggml_type_size(dst->type) &&
+        nb00 == ggml_type_size(src0->type) &&
+        nb10 == ggml_type_size(src1->type) &&
+        (src0->type == GGML_TYPE_F32 || src0->type == GGML_TYPE_F16)  && src1->type == GGML_TYPE_F32) {
         return true;
     }
-
     return false;
 }
 
