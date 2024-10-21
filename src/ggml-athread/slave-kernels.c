@@ -187,3 +187,108 @@ void mul_mat_fp16(void* args) {
     }
 }
 
+void cont_32(void* args) {
+    init();
+    struct unary_args* args_local = (struct unary_args*) ldm_malloc_fast(sizeof(struct unary_args));
+    athread_dma_bcast_coll((void *) args_local, args, sizeof(struct unary_args));
+
+    struct athread_tensor* src0 = &args_local->src0;
+    struct athread_tensor* dst = &args_local->dst;
+    char* dst_ptr = (char *) dst->data;
+    char* src_ptr = (char *) src0->data;
+
+    GGML_TENSOR_LOCALS(int, ne0, src0, ne)
+    GGML_TENSOR_LOCALS(int, ne, dst, ne)
+    GGML_TENSOR_LOCALS(size_t, nb0, src0, nb)
+
+    int idx = 0;
+    int i0, i1, i2, i3;
+
+    if (nb00 == 4) {
+        for (i3 = 0; i3 < ne03; i3++) {
+            for (i2 = 0; i2 < ne02; i2++) {
+                for (i1 = 0; i1 < ne01; i1++) {
+                    if (idx == _PEN) {
+#pragma GCC unroll 8
+                        for (i0 = 0; i0 < ne00; i0++) {
+                            *(uint32_t*) (dst_ptr + i0 * 4 + i1 * ne00 * 4 + i2 * ne00 * ne01 * 4 + i3 * ne00 * ne01 * ne02 * 4) = 
+                            *(uint32_t*) (src_ptr + i0 * nb00 + i1 * nb01 + i2 * nb02 + i3 * nb03);
+                        }
+                    }
+                    idx = ((idx + 1) & 0xff);
+                }
+            }
+        }
+    } else if (nb01 == 4) {
+        for (i3 = 0; i3 < ne03; i3++) {
+            for (i2 = 0; i2 < ne02; i2++) {
+                if (idx == _PEN) {
+                    for (i1 = 0; i1 + 8 <= ne01; i1+=8) {
+                        for (i0 = 0; i0 < ne00; i0++) {
+#pragma GCC unroll 8 
+                            for (int p = 0; p < 8;p++) {
+                                *(uint32_t*) (dst_ptr + i0 * 4 + (i1 + p) * ne00 * 4 + i2 * ne00 * ne01 * 4 + i3 * ne00 * ne01 * ne02 * 4) = 
+                                *(uint32_t*) (src_ptr + i0 * nb00 + (i1 + p) * nb01 + i2 * nb02 + i3 * nb03);
+                            }
+                        }
+                    }
+                    for (; i1 < ne01; i1++) {
+                        for (i0 = 0; i0 < ne00; i0++) {
+                            *(uint32_t*) (dst_ptr + i0 * 4 + i1 * ne00 * 4 + i2 * ne00 * ne01 * 4 + i3 * ne00 * ne01 * ne02 * 4) = 
+                            *(uint32_t*) (src_ptr + i0 * nb00 + i1 * nb01 + i2 * nb02 + i3 * nb03);
+                        }
+                    }
+                }
+                idx = ((idx + 1) & 0xff);
+            }
+        }
+    } else {
+        for (i3 = 0; i3 < ne03; i3++) {
+            for (i2 = 0; i2 < ne02; i2++) {
+                if (idx == _PEN) {
+                    for (i1 = 0; i1 < ne01; i1++) {
+                        for (i0 = 0; i0 < ne00; i0++) {
+                            *(uint32_t*) (dst_ptr + i0 * 4 + i1 * ne00 * 4 + i2 * ne00 * ne01 * 4 + i3 * ne00 * ne01 * ne02 * 4) = 
+                            *(uint32_t*) (src_ptr + i0 * nb00 + i1 * nb01 + i2 * nb02 + i3 * nb03);
+                        }
+                    }
+                }
+                idx = ((idx + 1) & 0xff);
+            }
+        }
+    }
+    flush_slave_cache();
+}
+
+void softmax_f32(void * args) {
+    init();
+    struct unary_args* args_local = (struct unary_args*) ldm_malloc_fast(sizeof(struct unary_args));
+    athread_dma_bcast_coll((void *) args_local, args, sizeof(struct unary_args));
+
+    struct athread_tensor* src0 = &args_local->src0;
+    struct athread_tensor* dst = &args_local->dst;
+
+    GGML_TENSOR_LOCALS(int, ne0, src0, ne)
+    const int nc = ne00;
+    const int nr = ne01 * ne02 * ne03;
+
+    for (int i1 = _PEN; i1 < nr; i1+=64) {
+        float * sp = (float *)((char *) src0->data + i1*src0->nb[1]);
+        float * dp = (float *)((char *)  dst->data +  i1*dst->nb[1]);
+
+        float max = -1e30;
+        for (int j = 0;j < nc;j++) {
+            max = MAX(max, sp[j]);
+        }
+        float sum = 0.0f;
+        for (int j = 0;j < nc;j++) {
+            dp[j] = (sp[j] - max) < -50.0f ? 0.0f : PT_expf(sp[j] - max);
+            sum += dp[j];
+        }
+        sum = 1.0f/sum;
+        for (int j = 0;j < nc;j++) {
+            dp[j] = dp[j] * sum;
+        }
+    }
+    flush_slave_cache();
+}

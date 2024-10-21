@@ -11,3 +11,8 @@ struct mul_mat_args {
     struct athread_tensor src0;
     struct athread_tensor src1;
 };
+
+struct unary_args {
+    struct athread_tensor dst;
+    struct athread_tensor src0;
+};

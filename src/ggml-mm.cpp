@@ -1,10 +1,10 @@
 #include "ggml-mm.h"
-#include "ggml-athread/pt_math.h"
 #include "ggml-impl.h"
 #include "ggml-backend-impl.h"
 #include "ggml.h"
 #include "ggml-athread/tensors.h"
 #include <athread.h>
+#include <simd.h>
 #include <cassert>
 #include <cfloat>
 #include <cmath>
@@ -29,6 +29,7 @@ static void ggml_set_op_params(struct ggml_tensor * tensor, const void * params,
 
 
 struct ggml_backend_mm_context {
+    int64_t op_time[100];
     float* work_data;
 };
 
@@ -79,6 +80,8 @@ static bool ggml_backend_mm_use_dup(const struct ggml_tensor * dst) {
 extern "C" {
     void slave_mul_mat_fp32(void *);
     void slave_mul_mat_fp16(void *);
+    void slave_cont_32(void *);
+    void slave_softmax_f32(void *);
 }
 
 
@@ -104,36 +107,61 @@ static void ggml_backend_mm_mul_mat(ggml_backend_mm_context * ctx, struct ggml_t
     }
 }
 
+/*
+static inline void transpose8x8(int *dst, int ld0, int* src, int ld1) {
+    static int mat[8][8] __attribute__((aligned(32)));
+    intv8 r0,r1,r2,r3,r4,r5,r6,r7,r8;
+    simd_load(r0, src + ld1 * 0);
+    simd_load(r1, src + ld1 * 1);
+    simd_load(r2, src + ld1 * 2);
+    simd_load(r3, src + ld1 * 3);
+    simd_load(r4, src + ld1 * 4);
+    simd_load(r5, src + ld1 * 5);
+    simd_load(r6, src + ld1 * 6);
+    simd_load(r7, src + ld1 * 7);
+
+    simd_store(r0, mat[0]);
+    simd_store(r1, mat[1]);
+    simd_store(r2, mat[2]);
+    simd_store(r3, mat[3]);
+    simd_store(r4, mat[4]);
+    simd_store(r5, mat[5]);
+    simd_store(r6, mat[6]);
+    simd_store(r7, mat[7]);
+    for (int i = 0;i < 8;i++) {
+        for (int j = 0;j < i;j++) {
+            int tmp = mat[i][j];
+            mat[i][j] = mat[j][i];
+            mat[j][i] = tmp; 
+        }
+    }
+    simd_load(r0, mat[0]);
+    simd_load(r1, mat[1]);
+    simd_load(r2, mat[2]);
+    simd_load(r3, mat[3]);
+    simd_load(r4, mat[4]);
+    simd_load(r5, mat[5]);
+    simd_load(r6, mat[6]);
+    simd_load(r7, mat[7]);
+    simd_store(r0, dst + 0 * ld0);
+    simd_store(r1, dst + 1 * ld0);
+    simd_store(r2, dst + 2 * ld0);
+    simd_store(r3, dst + 3 * ld0);
+    simd_store(r4, dst + 4 * ld0);
+    simd_store(r5, dst + 5 * ld0);
+    simd_store(r6, dst + 6 * ld0);
+    simd_store(r7, dst + 7 * ld0);
+}
+*/
+
 // ggml_compute_forward_soft_max
 
 static void ggml_backend_mm_soft_max(ggml_backend_mm_context * ctx, struct ggml_tensor * dst) {
 
-    const struct ggml_tensor * src0 = dst->src[0];
-
-    GGML_TENSOR_UNARY_OP_LOCALS
-
-    const int nc = src0->ne[0];
-    const int nr = ggml_nrows(src0);
-
-    for (int i1 = 0; i1 < nr; i1++) {
-        float * sp = (float *)((char *) src0->data + i1*src0->nb[1]);
-        float * dp = (float *)((char *)  dst->data +  i1*dst->nb[1]);
-
-        float max = -FLT_MAX / 2;
-        for (int j = 0;j < nc;j++) {
-            max = fmax(max, sp[j]);
-        }
-        float sum = 0.0f;
-        for (int j = 0;j < nc;j++) {
-            dp[j] = sp[j] - max < -20.0f ? 0.0f : expf(sp[j] - max);
-            sum += dp[j];
-        }
-        assert(sum > 0.0);
-        sum = 1.0/sum;
-        for (int j = 0;j < nc;j++) {
-            dp[j] = dp[j] * sum;
-        }
-    }
+    unary_args args;
+    to_athread_tensor(&args.dst, dst);
+    to_athread_tensor(&args.src0, dst->src[0]);
+    run_athread_func(slave_softmax_f32, &args);
 }
 
 
@@ -160,59 +188,7 @@ static void ggml_backend_mm_dup(ggml_backend_mm_context * ctx, struct ggml_tenso
             }
         }
     } else if (type_size == 4) {
-        if (nb00 == type_size) {
-            for (i3 = 0; i3 < ne03; i3++) {
-                for (i2 = 0; i2 < ne02; i2++) {
-                    for (i1 = 0; i1 < ne01; i1++) {
-#pragma GCC unroll 8
-                        for (i0 = 0; i0 < ne00; i0++) {
-                            *(uint32_t*) (dst_ptr + i0 * 4 + i1 * ne00 * 4 + i2 * ne00 * ne01 * 4 + i3 * ne00 * ne01 * ne02 * 4) = 
-                            *(uint32_t*) (src_ptr + i0 * nb00 + i1 * nb01 + i2 * nb02 + i3 * nb03);
-                        }
-                    }
-                }
-            }
-        } else if (nb01 == type_size) {
-            for (i3 = 0; i3 < ne03; i3++) {
-                for (i2 = 0; i2 < ne02; i2++) {
-                    for (i1 = 0; i1 + 8 <= ne01; i1+=8) {
-                        for (i0 = 0; i0 < ne00; i0++) {
-#pragma GCC unroll 8 
-                            for (int p = 0; p < 8;p++) {
-                                *(uint32_t*) (dst_ptr + i0 * 4 + (i1 + p) * ne00 * 4 + i2 * ne00 * ne01 * 4 + i3 * ne00 * ne01 * ne02 * 4) = 
-                                *(uint32_t*) (src_ptr + i0 * nb00 + (i1 + p) * nb01 + i2 * nb02 + i3 * nb03);
-                            }
-                        }
-                    }
-                    for (; i1 < ne01; i1++) {
-                        for (i0 = 0; i0 < ne00; i0++) {
-                            *(uint32_t*) (dst_ptr + i0 * 4 + i1 * ne00 * 4 + i2 * ne00 * ne01 * 4 + i3 * ne00 * ne01 * ne02 * 4) = 
-                            *(uint32_t*) (src_ptr + i0 * nb00 + i1 * nb01 + i2 * nb02 + i3 * nb03);
-                        }
-                    }
-                }
-            }
-        } else if (nb02 == type_size) {
-            for (i3 = 0; i3 < ne03; i3++) {
-                for (i1 = 0; i1 < ne01; i1++) {
-                    for (i2 = 0; i2 <= ne02; i2+=8) {
-                        for (i0 = 0; i0 < ne00; i0++) {
-#pragma GCC unroll 8 
-                            for (int p = 0; p < 8;p++) {
-                                *(uint32_t*) (dst_ptr + i0 * 4 + i1 * ne00 * 4 + (i2 + p) * ne00 * ne01 * 4 + i3 * ne00 * ne01 * ne02 * 4) = 
-                                *(uint32_t*) (src_ptr + i0 * nb00 + i1 * nb01 + (i2 + p) * nb02 + i3 * nb03);
-                            }
-                        }
-                    }
-                    for (; i2 < ne02; i2++) {
-                        for (i0 = 0; i0 < ne00; i0++) {
-                            *(uint32_t*) (dst_ptr + i0 * 4 + i1 * ne00 * 4 + i2 * ne00 * ne01 * 4 + i3 * ne00 * ne01 * ne02 * 4) = 
-                            *(uint32_t*) (src_ptr + i0 * nb00 + i1 * nb01 + i2 * nb02 + i3 * nb03);
-                        }
-                    }
-                }
-            }
-        } else {
+        if (ne00 * ne01 * ne02 * ne03 <= 1024) {
             for (i3 = 0; i3 < ne03; i3++) {
                 for (i2 = 0; i2 < ne02; i2++) {
                     for (i1 = 0; i1 < ne01; i1++) {
@@ -223,8 +199,12 @@ static void ggml_backend_mm_dup(ggml_backend_mm_context * ctx, struct ggml_tenso
                     }
                 }
             }
+            return;
         }
-
+        unary_args args;
+        to_athread_tensor(&args.dst, dst);
+        to_athread_tensor(&args.src0, src0);
+        run_athread_func(slave_cont_32, &args);
     } else {
         assert(false);
     }
@@ -241,6 +221,17 @@ static const char * ggml_backend_mm_name(ggml_backend_t backend) {
 static void ggml_backend_mm_free(ggml_backend_t backend) {
     athread_leave64_arg();
     ggml_backend_mm_context * ctx = (ggml_backend_mm_context *)backend->context;
+
+    printf("\nOP TIME USED:\n");
+    int64_t * op_time = ctx->op_time;
+    for (int i = 0;i < 100;i++) {
+        if (op_time[i] != 0) {
+            printf("%s : %ld\n", ggml_op_name(ggml_op(i)), op_time[i]); 
+        }
+    }
+    printf("\n");
+
+
     delete ctx;
     delete backend;
 }
@@ -256,6 +247,7 @@ static enum ggml_status ggml_backend_mm_graph_compute(ggml_backend_t backend, st
 
     for (int i = 0; i < cgraph->n_nodes; i++) {
         struct ggml_tensor * node = cgraph->nodes[i];
+        int64_t start = ggml_time_us();
 
         switch (node->op) {
             case GGML_OP_MUL_MAT:
@@ -280,6 +272,8 @@ static enum ggml_status ggml_backend_mm_graph_compute(ggml_backend_t backend, st
             default:
                 GGML_ABORT("%s: unsupported op %s\n", __func__, ggml_op_desc(node));
         }
+        int64_t end = ggml_time_us();
+        ctx->op_time[node->op] += end - start;
     }
 
     return GGML_STATUS_SUCCESS;
@@ -334,7 +328,30 @@ ggml_backend_t ggml_backend_mm_init(void) {
     athread_res_show();
     athread_enter64_arg();
 
+    // int tmp[8][8];
+
+    // for (int i = 0;i < 8;i++) {
+    //     for (int j = 0;j < 8;j++) {
+    //         tmp[i][j] = i * 8 + j;
+    //     }
+    // }
+    // for (int i = 0;i < 8;i++) {
+    //     for (int j = 0;j < 8;j++) {
+    //         printf("%d ", tmp[i][j]);
+    //     }
+    //     printf("\n");
+    // }
+    // transpose8x8((int *) tmp, 8, (int *) tmp, 8);
+    // for (int i = 0;i < 8;i++) {
+    //     for (int j = 0;j < 8;j++) {
+    //         printf("%d ", tmp[i][j]);
+    //     }
+    //     printf("\n");
+    // }
+
+
     ggml_backend_mm_context * ctx = new ggml_backend_mm_context;
+    memset(ctx->op_time,0, sizeof(ctx->op_time));
     ggml_backend_t backend = new ggml_backend {
         /* .guid      = */ ggml_backend_mm_guid(),
         /* .interface = */ mm_backend_i,

@@ -2104,6 +2104,7 @@ struct ggml_compute_state {
 #endif
     struct ggml_threadpool * threadpool;
     int ith;
+    int64_t* op_time;
 };
 
 struct ggml_compute_params {
@@ -19572,6 +19573,16 @@ void ggml_threadpool_free(struct ggml_threadpool* threadpool) {
         UNUSED(rc);
     }
 
+    int64_t* op_time = workers[0].op_time;
+    printf("\nOP TIME USED:\n");
+    for (int i = 0;i < 100;i++) {
+        if (op_time[i] != 0) {
+            printf("%s : %ld\n", ggml_op_name(i), op_time[i]); 
+        }
+    }
+    printf("\n");
+
+
     ggml_mutex_destroy(&threadpool->mutex);
     ggml_cond_destroy(&threadpool->cond);
 #endif // GGML_USE_OPENMP
@@ -19817,17 +19828,18 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
     };
 
     // int64_t op_time[100];
+    int64_t* op_time = state->op_time;
     // memset(op_time, 0, sizeof(op_time));
 
     for (int node_n = 0; node_n < cgraph->n_nodes && !tp->abort; node_n++) {
         struct ggml_tensor * node = cgraph->nodes[node_n];
 
-        // int64_t start = ggml_time_us();
+        int64_t start = ggml_time_us();
 
         ggml_compute_forward(&params, node);
 
-        // int64_t end = ggml_time_us();
-        // op_time[node->op] += end - start;
+        int64_t end = ggml_time_us();
+        op_time[node->op] += end - start;
 
         if (state->ith == 0 && cplan->abort_callback &&
                 cplan->abort_callback(cplan->abort_callback_data)) {
@@ -20053,6 +20065,8 @@ static struct ggml_threadpool * ggml_threadpool_new_impl(
     for (int j = 0; j < tpp->n_threads; j++) {
         workers[j].threadpool = threadpool;
         workers[j].ith        = j;
+        workers[j].op_time = malloc(sizeof(int64_t) * 100);
+        memset(workers[j].op_time, 0, sizeof(int64_t) * 100);
     }
 
     threadpool->workers = workers;

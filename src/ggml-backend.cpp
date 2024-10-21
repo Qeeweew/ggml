@@ -1,5 +1,6 @@
 // Note: porting this file to C++ is a work in progress
 
+#include "ggml.h"
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #ifndef NOMINMAX
@@ -854,6 +855,7 @@ static const char * ggml_backend_cpu_get_name(ggml_backend_t backend) {
 
 static void ggml_backend_cpu_free(ggml_backend_t backend) {
     struct ggml_backend_cpu_context * cpu_ctx = (struct ggml_backend_cpu_context *)backend->context;
+    ggml_threadpool_free(cpu_ctx->threadpool);
     delete[] cpu_ctx->work_data;
     delete cpu_ctx;
     delete backend;
@@ -962,8 +964,10 @@ ggml_backend_t ggml_backend_cpu_init(void) {
         return NULL;
     }
 
+    auto parmas = ggml_threadpool_params_default(1);
+
     ctx->n_threads           = GGML_DEFAULT_N_THREADS;
-    ctx->threadpool          = NULL;
+    ctx->threadpool          = ggml_threadpool_new(&parmas);
     ctx->work_data           = NULL;
     ctx->work_size           = 0;
     ctx->abort_callback      = NULL;
